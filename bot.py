@@ -87,4 +87,5 @@ def go_cmd(msg):
     except Exception as e:
         bot.reply_to(msg, f'Ошибка: {e}')
 
-print('Бот запущен и ждёт команды')bot.polling()
+print('Бот запущен и ждёт команды')
+bot.polling()
